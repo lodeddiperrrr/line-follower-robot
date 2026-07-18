@@ -62,6 +62,11 @@ uint8_t timer2_counter = 0;
 uint8_t number = 124;
 uint8_t numarray[4];
 
+// --- PID VARS
+#define Kp 1U
+#define Ki 1U
+#define Kd 1U
+
 
 /* USER CODE END PV */
 
@@ -75,6 +80,10 @@ static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 void led_state(State state);
+int get_error(uint8_t adc_vals[], uint8_t size); // calc error based on adc values
+int pid_controller(int err); 					 // calc correction using formula C = Kp*err + Ki*err + Kd*err
+void adjust_motors(int correction);				 // adjust motors based on correction input
+
 
 /* USER CODE END PFP */
 
@@ -100,11 +109,14 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
+
+
   // ---- INIT ---- //
   state = WAIT;
   led_state(state);
 
   /* USER CODE END Init */
+
 
   /* Configure the system clock */
   SystemClock_Config();
