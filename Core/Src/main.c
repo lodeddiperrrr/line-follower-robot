@@ -55,18 +55,17 @@ UART_HandleTypeDef huart2;
 /* USER CODE BEGIN PV */
 
 
-#define ADC_AMNT 4U
+#define ADC_AMNT 7U
 uint16_t adc_vals[ADC_AMNT];
-uint8_t timer2_counter = 0;
 
-uint8_t number = 124;
-uint8_t numarray[4];
-
-// --- PID VARS
+// --- PID CONSTS
 #define Kp 1U
 #define Ki 1U
 #define Kd 1U
 
+#define ERROR_COUNT 9
+int last_error;
+int last_errors[ERROR_COUTN];
 
 /* USER CODE END PV */
 
@@ -80,10 +79,13 @@ static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 void led_state(State state);
-int get_error(uint8_t adc_vals[], uint8_t size); // calc error based on adc values
-int pid_controller(int err); 					 // calc correction using formula C = Kp*err + Ki*err + Kd*err
-void adjust_motors(int correction);				 // adjust motors based on correction input
 
+void read_adcs(void); // read from adc_vals
+void pid_controller(void); //
+void move_motors(int left_motor, int right_motor);
+
+void past_errors(int error);
+int error_sum(int index, int absolute_mode);
 
 /* USER CODE END PFP */
 
@@ -116,7 +118,6 @@ int main(void)
   led_state(state);
 
   /* USER CODE END Init */
-
 
   /* Configure the system clock */
   SystemClock_Config();
@@ -159,24 +160,8 @@ int main(void)
 	HAL_Delay(1);
 
 	// ----- PWM ----- //
-	/*
-	for(uint16_t i = 0; i < 255; i++) // pa6
-	{
-		__HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, i);
-		__HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, 255-i);
-		HAL_Delay(1);
-	}
-	for(uint16_t i = 255; i > 0; i--)
-	{
-		__HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, i);
-		__HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, 255-i);
-		HAL_Delay(1);
-	}
-	*/
 
 	// ---- UART ---- //
-    //sprintf(numarray, "%d\n", number);	// converting number to ascii into numarray
-    //HAL_UART_Transmit_IT(&huart2, numarray, 4);
 
 	// ---- SUPERLOOP ---- //
 	led_state(state);
@@ -282,7 +267,7 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 4;
+  hadc1.Init.NbrOfConversion = 7;
   hadc1.Init.DMAContinuousRequests = DISABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
@@ -322,6 +307,33 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_10;
   sConfig.Rank = 4;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_6;
+  sConfig.Rank = 5;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_7;
+  sConfig.Rank = 6;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_8;
+  sConfig.Rank = 7;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -566,34 +578,6 @@ void led_state(State state){
 		default:
 			break;
 	}
-}
-
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
-{
-    // Handle PC13
-    if (GPIO_Pin == GPIO_PIN_13)
-    {
-    	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
-    }
-    // Handle PC3
-    else if (GPIO_Pin == GPIO_PIN_3)
-    {
-    	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-    }
-}
-
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
-    // Check if the interrupt came from Timer 2
-    if (htim->Instance == TIM2)
-    {
-    	timer2_counter++;
-        if(timer2_counter == 9)
-        {
-        	HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5); // Toggles the built-in LED
-        	timer2_counter = 0;
-        }
-    }
 }
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
