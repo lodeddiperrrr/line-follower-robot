@@ -54,18 +54,28 @@ UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 
-
-#define ADC_AMNT 7U
-uint16_t adc_vals[ADC_AMNT];
-
-// --- PID CONSTS
+#define ADC_COUNT 7U
+#define ERROR_COUNT 10
 #define Kp 1U
 #define Ki 1U
 #define Kd 1U
+#define MIDDLE_ADC_POS 0U
+#define PWM_MAX 255U
 
-#define ERROR_COUNT 9
+volatile uint8_t robot_running = 0; // 0 = Stopped, 1 = Running
+uint8_t rx_byte;
+uint16_t adc_vals[ADC_COUNT];
 int last_error;
-int last_errors[ERROR_COUTN];
+int errors[ERROR_COUNT];
+
+/*
+	PB4 PWMA
+	PB5 PWMB
+	PC8 (AIN1) ✅
+	PC6 (AIN2) ✅
+	PC5 (BIN1) ✅
+	PC9 (BIN2) ✅
+ */
 
 /* USER CODE END PV */
 
@@ -79,13 +89,11 @@ static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 void led_state(State state);
-
-void read_adcs(void); // read from adc_vals
+int get_adc_pos(void); // read from adc_vals
 void pid_controller(void); //
 void move_motors(int left_motor, int right_motor);
-
 void past_errors(int error);
-int error_sum(int index, int absolute_mode);
+int error_sum(int index);
 
 /* USER CODE END PFP */
 
@@ -116,6 +124,7 @@ int main(void)
   // ---- INIT ---- //
   state = WAIT;
   led_state(state);
+  HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
 
   /* USER CODE END Init */
 
@@ -147,8 +156,8 @@ int main(void)
     /* USER CODE BEGIN 3 */
 	// --------------------------------------------------
 
-	// ----- ADC------ //
-	for(uint8_t i = 0; i < ADC_AMNT; i++)
+	// ----- GET ADC VALUES ------ //
+	for(uint8_t i = 0; i < ADC_COUNT; i++)
 	{
 		HAL_ADC_Start(&hadc1); // Trigger the next Rank in the sequence
 		if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
@@ -158,10 +167,6 @@ int main(void)
 	}
 	HAL_ADC_Stop(&hadc1); // Turn off the ADC until the next cycle
 	HAL_Delay(1);
-
-	// ----- PWM ----- //
-
-	// ---- UART ---- //
 
 	// ---- SUPERLOOP ---- //
 	led_state(state);
@@ -176,7 +181,24 @@ int main(void)
 	} else {
 		// TODO: Turn off motors, go into while loop, flash led
 	}
+	// PWM
+	// MOTOR A (RIGHT)
+	__HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, 20);
+	// MOTOR A forward
+	//HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_SET);
+	//HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, GPIO_PIN_RESET);
+	// MOTOR A reverse
+	//HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);
+	//HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, GPIO_PIN_SET);
 
+	// MOTOR B (LEFT)
+	__HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, 20);
+	// MOTOR B forward
+	//HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_SET);
+	//HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
+	// MOTOR B reverse
+	//HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_RESET);
+	//HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
   }
 
   // --------------------------------------------------
@@ -468,7 +490,7 @@ static void MX_USART2_UART_Init(void)
 
   /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
-  huart2.Init.BaudRate = 115200;
+  huart2.Init.BaudRate = 9600;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
   huart2.Init.StopBits = UART_STOPBITS_1;
   huart2.Init.Parity = UART_PARITY_NONE;
@@ -580,6 +602,48 @@ void led_state(State state){
 	}
 }
 
+int get_adc_pos(void){
+    uint8_t pos = 0;
+    uint8_t active = 0;
+    for(int i = 0; i < ADC_COUNT; i++){
+    	if(adc_vals[i] < 400){
+    		active++;
+    		pos += (i+1);
+    	}
+    }
+    if (active == 0){
+    	return 0.0;  // Or return a special code/last known position
+    }
+    return pos/active;
+}
+
+void pid_controller(void){
+	int position = get_adc_pos();
+	int error = MIDDLE_ADC_POS - position;
+	past_errors(error);
+    int P = error*Kp;
+    int I = errors_sum(5,0)*Ki;
+    int D = (error - last_error)*Kd
+}
+void move_motors(int left_motor, int right_motor){
+
+}
+
+void past_errors(int error){
+	for(int i = ERROR_COUNT-1; i > 0; i--){
+		errors[i] = errors[i - 1];
+	}
+	errors[0] = error;
+}
+
+int error_sum(int index){
+	int total_sum = 0;
+	for(int i = 0; i < index; i++){
+		total_sum += errors[i];
+	}
+	return total_sum;
+}
+
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance == USART2)
@@ -587,6 +651,23 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
         // This code executes automatically the exact microsecond
         // the last byte leaves the TX pin!
         // You can set a "ready" flag variable here if you want.
+    }
+}
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART2)
+    {
+        if (rx_byte == '1')
+        {
+            robot_running = 1; // App pressed START
+        }
+        else if (rx_byte == '0')
+        {
+            robot_running = 0; // App pressed STOP
+        }
+
+        HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
     }
 }
 
