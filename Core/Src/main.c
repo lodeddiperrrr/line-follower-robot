@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -56,17 +57,20 @@ UART_HandleTypeDef huart2;
 
 #define ADC_COUNT 7U
 #define ERROR_COUNT 10
-#define Kp 1U
-#define Ki 1U
-#define Kd 1U
-#define MIDDLE_ADC_POS 0U
+#define Kp .4
+#define Ki .2
+#define Kd .2
+#define MIDDLE_ADC_POS 400U
 #define PWM_MAX 255U
+#define BASE_SPEED_L 200U
+#define BASE_SPEED_R 200U
 
 volatile uint8_t robot_running = 0; // 0 = Stopped, 1 = Running
 uint8_t rx_byte;
 uint16_t adc_vals[ADC_COUNT];
 int last_error;
 int errors[ERROR_COUNT];
+char tx_buffer[16];
 
 /*
 	PB4 PWMA
@@ -177,7 +181,8 @@ int main(void)
 		}
 		// ELSE DO NOTHING
 	} else if (state == RUN) {
-		// TODO: RUN ALGORITHM
+		// RUN ALGORITHM
+		pid_controller();
 	} else {
 		// TODO: Turn off motors, go into while loop, flash led
 	}
@@ -602,28 +607,37 @@ void led_state(State state){
 	}
 }
 
-int get_adc_pos(void){
-    uint8_t pos = 0;
+int get_adc_pos(void) {
+    uint16_t pos = 0;                 // Expanded to uint16_t to avoid overflow
     uint8_t active = 0;
-    for(int i = 0; i < ADC_COUNT; i++){
-    	if(adc_vals[i] < 400){
-    		active++;
-    		pos += (i+1);
-    	}
+    for (int i = 0; i < ADC_COUNT; i++) {
+        if (adc_vals[i] < 400) {
+            active++;
+            pos += (i + 1) * 100;     // Scale position by 100
+        }
     }
-    if (active == 0){
-    	return 0.0;  // Or return a special code/last known position
+    if (active == 0) {
+        return 0;
     }
-    return pos/active;
+    return pos / active;              // E.g., position 3.5 becomes integer 350
 }
 
 void pid_controller(void){
 	int position = get_adc_pos();
 	int error = MIDDLE_ADC_POS - position;
 	past_errors(error);
+
     int P = error*Kp;
-    int I = errors_sum(5,0)*Ki;
-    int D = (error - last_error)*Kd
+    int I = error_sum(5)*Ki;
+    int D = (error - last_error)*Kd;
+
+    last_error = error;
+    int motor_speed = P + I + D;
+    //int left_motor_speed;
+    //int right_motor_speed;
+    //move_motors(left_motor_speed, right_motor_speed);
+    sprintf(tx_buffer, "%d\r\n", motor_speed);
+    HAL_UART_Transmit_IT(&huart2, (uint8_t*)tx_buffer, strlen(tx_buffer));
 }
 void move_motors(int left_motor, int right_motor){
 
