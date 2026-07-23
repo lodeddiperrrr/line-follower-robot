@@ -51,27 +51,29 @@ ADC_HandleTypeDef hadc1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
 
+UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 
 #define ADC_COUNT 7U
 #define ERROR_COUNT 10
-#define Kp .4
-#define Ki .2
-#define Kd .2
+#define Kp .04
+#define Ki .01
+#define Kd .01
 #define MIDDLE_ADC_POS 400U
 #define PWM_MAX 255U
 #define BASE_SPEED_L 200U
 #define BASE_SPEED_R 200U
 
-volatile uint8_t robot_running = 0; // 0 = Stopped, 1 = Running
-uint8_t rx_byte;
 uint16_t adc_vals[ADC_COUNT];
 int last_error;
 int errors[ERROR_COUNT];
-char tx_buffer[16];
+char tx_buffer[20];
 
+volatile uint8_t rx_byte;        // Stores single incoming byte
+char rx_cmd;            // Holds last processed character
+uint8_t new_data_flag = 0;
 /*
 	PB4 PWMA
 	PB5 PWMB
@@ -90,6 +92,7 @@ static void MX_ADC1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 void led_state(State state);
@@ -128,7 +131,6 @@ int main(void)
   // ---- INIT ---- //
   state = WAIT;
   led_state(state);
-  HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
 
   /* USER CODE END Init */
 
@@ -145,10 +147,12 @@ int main(void)
   MX_TIM2_Init();
   MX_TIM3_Init();
   MX_USART2_UART_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
   HAL_TIM_Base_Start_IT(&htim2);
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
+  HAL_UART_Receive_IT(&huart1, (uint8_t*)&rx_byte, 1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -173,6 +177,7 @@ int main(void)
 	HAL_Delay(1);
 
 	// ---- SUPERLOOP ---- //
+
 	led_state(state);
 	if(state == WAIT){
 		// TODO: wait for signal from remote to start
@@ -186,25 +191,9 @@ int main(void)
 	} else {
 		// TODO: Turn off motors, go into while loop, flash led
 	}
-	// PWM
-	// MOTOR A (RIGHT)
-	__HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, 20);
-	// MOTOR A forward
-	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_SET);
-	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, GPIO_PIN_RESET);
-	// MOTOR A reverse
-	//HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);
-	//HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, GPIO_PIN_SET);
 
-	// MOTOR B (LEFT)
-	__HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, 20);
-	// MOTOR B forward
-	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_SET);
-	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
-	// MOTOR B reverse
-	//HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_RESET);
-	//HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
   }
+
 
   // --------------------------------------------------
   /* USER CODE END 3 */
@@ -479,6 +468,39 @@ static void MX_TIM3_Init(void)
 }
 
 /**
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART1_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART1_Init 0 */
+
+  /* USER CODE END USART1_Init 0 */
+
+  /* USER CODE BEGIN USART1_Init 1 */
+
+  /* USER CODE END USART1_Init 1 */
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 9600;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART1_Init 2 */
+
+  /* USER CODE END USART1_Init 2 */
+
+}
+
+/**
   * @brief USART2 Initialization Function
   * @param None
   * @retval None
@@ -632,14 +654,30 @@ void pid_controller(void){
 
     last_error = error;
     int motor_speed = P + I + D;
-    //int left_motor_speed;
-    //int right_motor_speed;
-    //move_motors(left_motor_speed, right_motor_speed);
-    sprintf(tx_buffer, "%d\r\n", motor_speed);
-    HAL_UART_Transmit_IT(&huart2, (uint8_t*)tx_buffer, strlen(tx_buffer));
+    int left_motor_speed = BASE_SPEED_L + motor_speed;
+    int right_motor_speed = BASE_SPEED_R - motor_speed;
+    move_motors(left_motor_speed, right_motor_speed);
+
+    // if motor speed positive -> turn left -> right motor power > left motor power
+    // if motor speed negative -> turn right -> left motors > power than right
+    // test 1 for left motor: adc[0] (motor speed (+) therefore left motor speed > right motor speed)
+    // test 2 for right motor: adc[6] (motor speed (-) therefore right motor speed > left motor speed)
+    //sprintf(tx_buffer, "L: %d R: %d\r\n", left_motor_speed, right_motor_speed);
+    //HAL_UART_Transmit(&huart2, (uint8_t*)tx_buffer, strlen(tx_buffer), 50);
 }
 void move_motors(int left_motor, int right_motor){
+	// PWM
+	// MOTOR A (RIGHT)
+	__HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, 20);
+	// MOTOR A forward
+	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_SET);
+	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, GPIO_PIN_RESET);
 
+	// MOTOR B (LEFT)
+	__HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, 20);
+	// MOTOR B forward
+	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_SET);
+	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
 }
 
 void past_errors(int error){
@@ -669,18 +707,19 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-    if (huart->Instance == USART2)
+    if (huart->Instance == USART1)
     {
         if (rx_byte == '1')
         {
-            robot_running = 1; // App pressed START
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);   // LED ON
         }
         else if (rx_byte == '0')
         {
-            robot_running = 0; // App pressed STOP
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET); // LED OFF
         }
 
-        HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
+        // Re-arm interrupt for the next byte
+        HAL_UART_Receive_IT(&huart1, (uint8_t*)&rx_byte, 1);
     }
 }
 
